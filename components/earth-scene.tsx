@@ -9,15 +9,17 @@ import {
   useState,
 } from "react";
 import { Canvas, useFrame, useLoader, type ThreeEvent } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { Group, Mesh } from "three";
 import { findCountryAt, loadCountries, type Country } from "@/lib/countries";
+import { citiesForZoom, loadCities, type City } from "@/lib/cities";
 
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 const EARTH_RADIUS = 2;
 const BORDER_RADIUS = EARTH_RADIUS + 0.006;
+const LABEL_RADIUS = EARTH_RADIUS + 0.01;
 
 /**
  * Computes where the sun currently is relative to the earth, based on the
@@ -85,6 +87,116 @@ function useCountries() {
   return countries;
 }
 
+function useCities() {
+  const [cities, setCities] = useState<City[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadCities().then((data) => {
+      if (!cancelled) setCities(data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return cities;
+}
+
+const tmpParentQuat = new THREE.Quaternion();
+const tmpCamQuat = new THREE.Quaternion();
+const tmpCamLocalDir = new THREE.Vector3();
+// Hide labels once their point on the globe tilts more than ~72° away from
+// facing the camera — otherwise labels near the horizon bunch up and get
+// visually crushed together by the sphere's curvature.
+const HORIZON_COS = Math.cos(72 * DEG2RAD);
+
+/**
+ * Renders city name labels that face the camera and stay a consistent
+ * screen size regardless of zoom. Which cities are shown is driven by
+ * camera distance (see citiesForZoom) so the globe isn't cluttered with
+ * thousands of small-town names at a whole-earth view, but reveals more
+ * detail as you zoom in. Labels near the horizon are hidden to avoid the
+ * clutter/distortion that comes with the sphere's curvature there.
+ */
+function CityLabels({ cities }: { cities: City[] | null }) {
+  const anchorRef = useRef<Group>(null);
+  const labelRefs = useRef<(Group | null)[]>([]);
+  const [visible, setVisible] = useState<City[]>([]);
+  const lastDistanceBucket = useRef<number | null>(null);
+
+  // Unit-sphere direction for each currently-visible city, parallel to
+  // `visible` — used for the horizon cull below.
+  const cityDirs = useMemo(
+    () => visible.map((city) => lonLatToVector3(city.lon, city.lat, 1)),
+    [visible],
+  );
+
+  useFrame(({ camera }) => {
+    const distance = camera.position.length();
+
+    if (cities) {
+      // Quantize so we only recompute (and re-lay-out text meshes) when the
+      // zoom has changed meaningfully, not on every frame.
+      const bucket = Math.round(distance * 4) / 4;
+      if (lastDistanceBucket.current !== bucket) {
+        lastDistanceBucket.current = bucket;
+        setVisible(citiesForZoom(cities, distance));
+      }
+    }
+
+    if (anchorRef.current) {
+      const parentWorldQuat = anchorRef.current.getWorldQuaternion(tmpParentQuat);
+      const labelQuat = camera
+        .getWorldQuaternion(tmpCamQuat)
+        .premultiply(parentWorldQuat.invert());
+      // fontSize is set to 1 below; the actual on-screen size is entirely
+      // driven by this scale, chosen so labels stay a roughly constant
+      // pixel size on screen regardless of zoom (world size must grow
+      // linearly with distance to counteract perspective shrinkage).
+      const scale = distance * 0.0145;
+      const camLocalDir = anchorRef.current
+        .worldToLocal(tmpCamLocalDir.copy(camera.position))
+        .normalize();
+
+      for (let i = 0; i < labelRefs.current.length; i++) {
+        const label = labelRefs.current[i];
+        if (!label) continue;
+        label.quaternion.copy(labelQuat);
+        label.scale.setScalar(scale);
+        const dir = cityDirs[i];
+        label.visible = !dir || dir.dot(camLocalDir) > HORIZON_COS;
+      }
+    }
+  });
+
+  return (
+    <group ref={anchorRef}>
+      {visible.map((city, i) => (
+        <group
+          key={`${city.name}-${city.lat}-${city.lon}`}
+          position={lonLatToVector3(city.lon, city.lat, LABEL_RADIUS)}
+          ref={(el) => {
+            labelRefs.current[i] = el;
+          }}
+          raycast={() => null}
+        >
+          <Text
+            fontSize={1}
+            color="#ffffff"
+            outlineWidth="8%"
+            outlineColor="#000000"
+            outlineOpacity={0.85}
+            anchorX="center"
+            anchorY="bottom"
+            raycast={() => null}
+          >
+            {city.name}
+          </Text>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function CountryBorder({ country }: { country: Country | null }) {
   const geometry = useMemo(() => {
     if (!country) return null;
@@ -124,6 +236,7 @@ function Earth() {
   const countries = useCountries();
   const [hovered, setHovered] = useState<Country | null>(null);
   const lastHitTest = useRef(0);
+  const cities = useCities();
 
   const [dayMap, cloudsMap, nightMap, normalMap, specularMap] = useLoader(
     THREE.TextureLoader,
@@ -194,6 +307,7 @@ function Earth() {
           />
         </mesh>
         <CountryBorder country={hovered} />
+        <CityLabels cities={cities} />
       </group>
       <mesh ref={cloudsRef} raycast={() => null}>
         <sphereGeometry args={[2.015, 128, 128]} />

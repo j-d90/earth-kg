@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "build:countries": "node scripts/build-countries.mjs"
+    "build:countries": "node scripts/build-countries.mjs",
+    "build:cities": "node scripts/build-cities.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
