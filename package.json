@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "build:countries": "node scripts/build-countries.mjs",
-    "build:cities": "node scripts/build-cities.mjs"
+    "build:cities": "node scripts/build-cities.mjs",
+    "build:counties": "node scripts/build-counties.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.8",
